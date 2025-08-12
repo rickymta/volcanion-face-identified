@@ -1,0 +1,452 @@
+name: CD Pipeline - Deployment
+
+on:
+  workflow_run:
+    workflows: ["CI/CD Pipeline"]
+    types:
+      - completed
+    branches: [main, develop]
+  
+  # Manual trigger for emergency deployments
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      version:
+        description: 'Version/Tag to deploy'
+        required: false
+        default: 'latest'
+      skip_tests:
+        description: 'Skip deployment tests'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: face-verification-api
+
+jobs:
+  # Pre-deployment checks
+  pre-deployment:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    outputs:
+      deploy-staging: ${{ steps.check.outputs.deploy-staging }}
+      deploy-production: ${{ steps.check.outputs.deploy-production }}
+      image-tag: ${{ steps.check.outputs.image-tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Determine deployment targets
+        id: check
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "Manual deployment triggered"
+            if [[ "${{ github.event.inputs.environment }}" == "staging" ]]; then
+              echo "deploy-staging=true" >> $GITHUB_OUTPUT
+              echo "deploy-production=false" >> $GITHUB_OUTPUT
+            else
+              echo "deploy-staging=false" >> $GITHUB_OUTPUT
+              echo "deploy-production=true" >> $GITHUB_OUTPUT
+            fi
+            echo "image-tag=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            # Automatic deployment based on branch
+            if [[ "${{ github.event.workflow_run.head_branch }}" == "develop" ]]; then
+              echo "deploy-staging=true" >> $GITHUB_OUTPUT
+              echo "deploy-production=false" >> $GITHUB_OUTPUT
+            elif [[ "${{ github.event.workflow_run.head_branch }}" == "main" ]]; then
+              echo "deploy-staging=false" >> $GITHUB_OUTPUT
+              echo "deploy-production=true" >> $GITHUB_OUTPUT
+            else
+              echo "deploy-staging=false" >> $GITHUB_OUTPUT
+              echo "deploy-production=false" >> $GITHUB_OUTPUT
+            fi
+            echo "image-tag=${{ github.event.workflow_run.head_sha }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Verify image exists
+        run: |
+          IMAGE_TAG="${{ steps.check.outputs.image-tag }}"
+          if [[ "$IMAGE_TAG" == "latest" ]]; then
+            IMAGE_TAG="${{ github.event.workflow_run.head_sha || github.sha }}"
+          fi
+          
+          echo "Checking if image exists: ${{ env.REGISTRY }}/${{ github.repository }}:$IMAGE_TAG"
+          
+          # Login to check if image exists
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+          
+          if docker manifest inspect ${{ env.REGISTRY }}/${{ github.repository }}:$IMAGE_TAG >/dev/null 2>&1; then
+            echo "✅ Image found: ${{ env.REGISTRY }}/${{ github.repository }}:$IMAGE_TAG"
+          else
+            echo "❌ Image not found: ${{ env.REGISTRY }}/${{ github.repository }}:$IMAGE_TAG"
+            exit 1
+          fi
+
+  # Deploy to staging environment
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: pre-deployment
+    if: needs.pre-deployment.outputs.deploy-staging == 'true'
+    environment: 
+      name: staging
+      url: https://staging-api.face-verification.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup deployment tools
+        run: |
+          # Install kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+          
+          # Install helm
+          curl https://get.helm.sh/helm-v3.12.0-linux-amd64.tar.gz | tar xz
+          sudo mv linux-amd64/helm /usr/local/bin/
+
+      - name: Configure kubectl
+        run: |
+          echo "${{ secrets.KUBE_CONFIG_STAGING }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+          kubectl config current-context
+
+      - name: Deploy to staging with Helm
+        run: |
+          export KUBECONFIG=kubeconfig
+          IMAGE_TAG="${{ needs.pre-deployment.outputs.image-tag }}"
+          
+          helm upgrade --install face-verification-staging ./k8s/helm/face-verification \
+            --namespace staging \
+            --create-namespace \
+            --set image.repository=${{ env.REGISTRY }}/${{ github.repository }} \
+            --set image.tag=$IMAGE_TAG \
+            --set environment=staging \
+            --set ingress.hosts[0].host=staging-api.face-verification.com \
+            --set mongodb.auth.rootPassword="${{ secrets.MONGODB_ROOT_PASSWORD_STAGING }}" \
+            --set mongodb.auth.username="${{ secrets.MONGODB_USERNAME_STAGING }}" \
+            --set mongodb.auth.password="${{ secrets.MONGODB_PASSWORD_STAGING }}" \
+            --set redis.auth.password="${{ secrets.REDIS_PASSWORD_STAGING }}" \
+            --set api.secretKey="${{ secrets.API_SECRET_KEY_STAGING }}" \
+            --timeout 10m \
+            --wait
+
+      - name: Verify staging deployment
+        run: |
+          export KUBECONFIG=kubeconfig
+          
+          # Wait for rollout to complete
+          kubectl rollout status deployment/face-verification-staging -n staging --timeout=300s
+          
+          # Check pod status
+          kubectl get pods -n staging -l app.kubernetes.io/name=face-verification
+          
+          # Verify service is accessible
+          kubectl get svc -n staging
+
+      - name: Run staging smoke tests
+        run: |
+          # Wait a bit for the service to be fully ready
+          sleep 30
+          
+          # Health check
+          STAGING_URL="https://staging-api.face-verification.com"
+          
+          echo "Testing health endpoint..."
+          response=$(curl -s -o /dev/null -w "%{http_code}" "$STAGING_URL/health")
+          if [[ $response -eq 200 ]]; then
+            echo "✅ Health check passed"
+          else
+            echo "❌ Health check failed with status: $response"
+            exit 1
+          fi
+          
+          # API documentation check
+          echo "Testing API docs endpoint..."
+          response=$(curl -s -o /dev/null -w "%{http_code}" "$STAGING_URL/docs")
+          if [[ $response -eq 200 ]]; then
+            echo "✅ API docs accessible"
+          else
+            echo "❌ API docs failed with status: $response"
+            exit 1
+          fi
+          
+          # Monitoring endpoint check
+          echo "Testing monitoring endpoint..."
+          response=$(curl -s -o /dev/null -w "%{http_code}" "$STAGING_URL/monitoring/health")
+          if [[ $response -eq 200 ]]; then
+            echo "✅ Monitoring endpoint accessible"
+          else
+            echo "❌ Monitoring endpoint failed with status: $response"
+            exit 1
+          fi
+
+      - name: Notify staging deployment
+        if: always()
+        continue-on-error: true
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#deployments'
+          text: |
+            Staging Deployment ${{ job.status }}
+            • Environment: staging
+            • Image: ${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.pre-deployment.outputs.image-tag }}
+            • URL: https://staging-api.face-verification.com
+            • Branch: ${{ github.event.workflow_run.head_branch || github.ref_name }}
+            • Commit: ${{ github.event.workflow_run.head_sha || github.sha }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # Deploy to production environment
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: pre-deployment
+    if: needs.pre-deployment.outputs.deploy-production == 'true'
+    environment: 
+      name: production
+      url: https://api.face-verification.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup deployment tools
+        run: |
+          # Install kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+          
+          # Install helm
+          curl https://get.helm.sh/helm-v3.12.0-linux-amd64.tar.gz | tar xz
+          sudo mv linux-amd64/helm /usr/local/bin/
+
+      - name: Configure kubectl
+        run: |
+          echo "${{ secrets.KUBE_CONFIG_PRODUCTION }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+          kubectl config current-context
+
+      - name: Create backup before deployment
+        run: |
+          export KUBECONFIG=kubeconfig
+          
+          # Backup current deployment
+          kubectl get deployment face-verification-production -n production -o yaml > backup-deployment.yaml
+          
+          # Backup database (if needed)
+          # kubectl exec -n production deployment/mongodb -- mongodump --archive | gzip > backup-$(date +%Y%m%d-%H%M%S).gz
+
+      - name: Deploy to production with Blue-Green strategy
+        run: |
+          export KUBECONFIG=kubeconfig
+          IMAGE_TAG="${{ needs.pre-deployment.outputs.image-tag }}"
+          
+          # Deploy to green environment first
+          helm upgrade --install face-verification-green ./k8s/helm/face-verification \
+            --namespace production \
+            --create-namespace \
+            --set image.repository=${{ env.REGISTRY }}/${{ github.repository }} \
+            --set image.tag=$IMAGE_TAG \
+            --set environment=production \
+            --set replicaCount=3 \
+            --set ingress.hosts[0].host=api.face-verification.com \
+            --set mongodb.auth.rootPassword="${{ secrets.MONGODB_ROOT_PASSWORD_PRODUCTION }}" \
+            --set mongodb.auth.username="${{ secrets.MONGODB_USERNAME_PRODUCTION }}" \
+            --set mongodb.auth.password="${{ secrets.MONGODB_PASSWORD_PRODUCTION }}" \
+            --set redis.auth.password="${{ secrets.REDIS_PASSWORD_PRODUCTION }}" \
+            --set api.secretKey="${{ secrets.API_SECRET_KEY_PRODUCTION }}" \
+            --set nameOverride="face-verification-green" \
+            --timeout 15m \
+            --wait
+
+      - name: Verify green deployment
+        run: |
+          export KUBECONFIG=kubeconfig
+          
+          # Wait for rollout to complete
+          kubectl rollout status deployment/face-verification-green -n production --timeout=600s
+          
+          # Check pod status
+          kubectl get pods -n production -l app.kubernetes.io/name=face-verification-green
+          
+          # Wait for pods to be ready
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=face-verification-green -n production --timeout=300s
+
+      - name: Run production health checks
+        run: |
+          export KUBECONFIG=kubeconfig
+          
+          # Get green service endpoint
+          GREEN_SERVICE=$(kubectl get svc -n production -l app.kubernetes.io/name=face-verification-green -o jsonpath='{.items[0].spec.clusterIP}')
+          GREEN_PORT=$(kubectl get svc -n production -l app.kubernetes.io/name=face-verification-green -o jsonpath='{.items[0].spec.ports[0].port}')
+          
+          # Port forward for testing
+          kubectl port-forward -n production svc/face-verification-green 8080:8000 &
+          PF_PID=$!
+          sleep 10
+          
+          # Health check
+          echo "Testing green deployment health..."
+          response=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/health")
+          if [[ $response -eq 200 ]]; then
+            echo "✅ Green deployment health check passed"
+          else
+            echo "❌ Green deployment health check failed with status: $response"
+            kill $PF_PID
+            exit 1
+          fi
+          
+          # Monitoring check
+          echo "Testing green deployment monitoring..."
+          response=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/monitoring/health")
+          if [[ $response -eq 200 ]]; then
+            echo "✅ Green deployment monitoring check passed"
+          else
+            echo "❌ Green deployment monitoring check failed with status: $response"
+            kill $PF_PID
+            exit 1
+          fi
+          
+          kill $PF_PID
+
+      - name: Switch traffic to green (Blue-Green cutover)
+        run: |
+          export KUBECONFIG=kubeconfig
+          
+          # Update ingress to point to green deployment
+          kubectl patch ingress face-verification-ingress -n production -p '{"spec":{"rules":[{"host":"api.face-verification.com","http":{"paths":[{"path":"/","pathType":"Prefix","backend":{"service":{"name":"face-verification-green","port":{"number":8000}}}}]}}]}}'
+          
+          # Wait a moment for the change to propagate
+          sleep 30
+
+      - name: Final production verification
+        run: |
+          # Test the actual production URL
+          PRODUCTION_URL="https://api.face-verification.com"
+          
+          echo "Testing production endpoint after cutover..."
+          response=$(curl -s -o /dev/null -w "%{http_code}" "$PRODUCTION_URL/health")
+          if [[ $response -eq 200 ]]; then
+            echo "✅ Production health check passed"
+          else
+            echo "❌ Production health check failed with status: $response"
+            echo "Rolling back..."
+            
+            # Rollback to blue deployment
+            kubectl patch ingress face-verification-ingress -n production -p '{"spec":{"rules":[{"host":"api.face-verification.com","http":{"paths":[{"path":"/","pathType":"Prefix","backend":{"service":{"name":"face-verification-production","port":{"number":8000}}}}]}}]}}'
+            exit 1
+          fi
+
+      - name: Cleanup old blue deployment
+        run: |
+          export KUBECONFIG=kubeconfig
+          
+          # Remove old blue deployment after successful green deployment
+          if kubectl get deployment face-verification-production -n production >/dev/null 2>&1; then
+            echo "Removing old blue deployment..."
+            kubectl delete deployment face-verification-production -n production || true
+            kubectl delete svc face-verification-production -n production || true
+          fi
+          
+          # Update green deployment labels to production
+          kubectl label deployment face-verification-green -n production app.kubernetes.io/instance=face-verification-production --overwrite
+          kubectl label svc face-verification-green -n production app.kubernetes.io/instance=face-verification-production --overwrite
+          
+          echo "✅ Blue-Green deployment completed successfully"
+
+      - name: Notify production deployment
+        if: always()
+        continue-on-error: true
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#deployments'
+          text: |
+            🚀 Production Deployment ${{ job.status }}
+            • Environment: production
+            • Image: ${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.pre-deployment.outputs.image-tag }}
+            • URL: https://api.face-verification.com
+            • Branch: ${{ github.event.workflow_run.head_branch || github.ref_name }}
+            • Commit: ${{ github.event.workflow_run.head_sha || github.sha }}
+            • Strategy: Blue-Green Deployment
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # Post-deployment monitoring
+  post-deployment:
+    runs-on: ubuntu-latest
+    needs: [pre-deployment, deploy-staging, deploy-production]
+    if: always() && (needs.deploy-staging.result == 'success' || needs.deploy-production.result == 'success')
+    steps:
+      - name: Monitor deployment health
+        run: |
+          echo "Starting post-deployment monitoring..."
+          
+          ENDPOINT=""
+          if [[ "${{ needs.deploy-staging.result }}" == "success" ]]; then
+            echo "Monitoring staging deployment..."
+            ENDPOINT="https://staging-api.face-verification.com"
+          elif [[ "${{ needs.deploy-production.result }}" == "success" ]]; then
+            echo "Monitoring production deployment..."
+            ENDPOINT="https://api.face-verification.com"
+          fi
+          
+          if [[ -z "$ENDPOINT" ]]; then
+            echo "No successful deployment to monitor"
+            exit 0
+          fi
+          
+          # Monitor for 5 minutes
+          for i in {1..10}; do
+            echo "Health check $i/10..."
+            response=$(curl -s -o /dev/null -w "%{http_code}" "$ENDPOINT/health")
+            if [[ $response -eq 200 ]]; then
+              echo "✅ Health check $i passed"
+            else
+              echo "❌ Health check $i failed with status: $response"
+            fi
+            sleep 30
+          done
+
+      - name: Generate deployment report
+        run: |
+          cat << EOF > deployment-report.md
+          # Deployment Report
+          
+          **Date**: $(date)
+          **Environment**: ${{ needs.pre-deployment.outputs.deploy-staging == 'true' && 'staging' || 'production' }}
+          **Image**: ${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.pre-deployment.outputs.image-tag }}
+          **Status**: ${{ (needs.deploy-staging.result == 'success' || needs.deploy-production.result == 'success') && 'SUCCESS' || 'FAILED' }}
+          
+          ## Deployment Details
+          - Staging: ${{ needs.deploy-staging.result || 'skipped' }}
+          - Production: ${{ needs.deploy-production.result || 'skipped' }}
+          
+          ## URLs
+          - Staging: https://staging-api.face-verification.com
+          - Production: https://api.face-verification.com
+          
+          ## Next Steps
+          - Monitor application performance
+          - Check error rates in monitoring dashboard
+          - Verify all endpoints are functioning correctly
+          EOF
+          
+          cat deployment-report.md
+
+      - name: Upload deployment artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: deployment-report
+          path: deployment-report.md

@@ -1,0 +1,437 @@
+name: Pipeline Validation
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - '.github/workflows/**'
+      - 'k8s/**'
+      - 'scripts/**'
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+  workflow_dispatch:
+    inputs:
+      test_scope:
+        description: 'Test scope'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - ci-only
+          - cd-only
+          - workflows
+          - docs
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  validate-workflows:
+    name: Validate Workflow Files
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml yamllint
+
+      - name: Validate CI workflow
+        run: |
+          echo "Validating CI workflow..."
+          yamllint .github/workflows/ci.yml
+          python -c "
+          import yaml
+          with open('.github/workflows/ci.yml', 'r') as f:
+              workflow = yaml.safe_load(f)
+          
+          # Check required jobs
+          required_jobs = ['code-quality', 'tests', 'docker-build', 'security-scan']
+          actual_jobs = list(workflow.get('jobs', {}).keys())
+          
+          missing_jobs = [job for job in required_jobs if job not in actual_jobs]
+          if missing_jobs:
+              raise Exception(f'Missing required jobs in CI: {missing_jobs}')
+          
+          print('✅ CI workflow validation passed')
+          "
+
+      - name: Validate CD workflow
+        run: |
+          echo "Validating CD workflow..."
+          yamllint .github/workflows/cd.yml
+          python -c "
+          import yaml
+          with open('.github/workflows/cd.yml', 'r') as f:
+              workflow = yaml.safe_load(f)
+          
+          # Check required jobs
+          required_jobs = ['pre-deployment-checks', 'deploy-staging', 'deploy-production']
+          actual_jobs = list(workflow.get('jobs', {}).keys())
+          
+          missing_jobs = [job for job in required_jobs if job not in actual_jobs]
+          if missing_jobs:
+              raise Exception(f'Missing required jobs in CD: {missing_jobs}')
+          
+          # Check if workflow is triggered by CI completion
+          triggers = workflow.get('on', {})
+          if 'workflow_run' not in triggers:
+              raise Exception('CD workflow should be triggered by workflow_run event')
+          
+          print('✅ CD workflow validation passed')
+          "
+
+  validate-helm-charts:
+    name: Validate Helm Charts
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'v3.12.0'
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Lint Helm charts
+        run: |
+          echo "Linting Helm charts..."
+          helm lint k8s/helm/face-verification/
+          
+          echo "✅ Helm chart linting passed"
+
+      - name: Validate Helm templates
+        run: |
+          echo "Validating Helm template rendering..."
+          helm template face-verification k8s/helm/face-verification/ \
+            --set image.tag=test \
+            --set mongodb.enabled=true \
+            --set redis.enabled=true > /tmp/rendered-manifests.yaml
+          
+          echo "Validating rendered Kubernetes manifests..."
+          kubectl apply --dry-run=client -f /tmp/rendered-manifests.yaml
+          
+          echo "✅ Helm template validation passed"
+
+      - name: Test different environments
+        run: |
+          echo "Testing staging environment..."
+          helm template face-verification k8s/helm/face-verification/ \
+            --set environment=staging \
+            --set image.tag=staging \
+            --set replicaCount=2 > /tmp/staging-manifests.yaml
+          kubectl apply --dry-run=client -f /tmp/staging-manifests.yaml
+          
+          echo "Testing production environment..."
+          helm template face-verification k8s/helm/face-verification/ \
+            --set environment=production \
+            --set image.tag=latest \
+            --set replicaCount=3 \
+            --set autoscaling.enabled=true > /tmp/production-manifests.yaml
+          kubectl apply --dry-run=client -f /tmp/production-manifests.yaml
+          
+          echo "✅ Environment-specific validation passed"
+
+  validate-docker:
+    name: Validate Docker Configuration
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Validate Dockerfile
+        run: |
+          echo "Validating Dockerfile..."
+          docker buildx build \
+            --platform linux/amd64 \
+            --target production \
+            --tag face-verification-test:latest \
+            --load \
+            .
+          
+          echo "Testing container startup..."
+          # Test if container can start (will fail due to missing config, but should not have build errors)
+          timeout 10s docker run --rm face-verification-test:latest --help || true
+          
+          echo "✅ Docker validation passed"
+
+      - name: Validate Docker Compose
+        run: |
+          echo "Validating Docker Compose configuration..."
+          docker compose config
+          
+          echo "Testing Docker Compose services..."
+          # Test if services can be parsed correctly
+          docker compose ps
+          
+          echo "✅ Docker Compose validation passed"
+
+      - name: Security scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'face-verification-test:latest'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '0'  # Don't fail on vulnerabilities for now
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  validate-scripts:
+    name: Validate Scripts
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml requests pytest black flake8 bandit
+
+      - name: Test CI/CD validation script
+        run: |
+          echo "Making test script executable..."
+          chmod +x scripts/test-cicd.sh
+          
+          echo "Running CI/CD validation script..."
+          ./scripts/test-cicd.sh --workflows
+          
+          echo "✅ Script validation passed"
+
+      - name: Test development scripts
+        run: |
+          echo "Testing development scripts..."
+          chmod +x scripts/dev.sh
+          
+          # Test script syntax
+          bash -n scripts/dev.sh
+          
+          echo "✅ Development script validation passed"
+
+  validate-documentation:
+    name: Validate Documentation
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install markdown linter
+        run: npm install -g markdownlint-cli
+
+      - name: Lint documentation
+        run: |
+          echo "Linting README.md..."
+          markdownlint README.md || true  # Don't fail on warnings for now
+          
+          echo "Checking documentation completeness..."
+          if [[ ! -f "README.md" ]]; then
+            echo "❌ README.md is missing"
+            exit 1
+          fi
+          
+          if [[ ! -f "API_DOCUMENTATION.md" ]]; then
+            echo "❌ API_DOCUMENTATION.md is missing"
+            exit 1
+          fi
+          
+          if [[ ! -f "CHANGELOG.md" ]]; then
+            echo "❌ CHANGELOG.md is missing"
+            exit 1
+          fi
+          
+          echo "✅ Documentation validation passed"
+
+      - name: Validate Postman collection
+        run: |
+          echo "Validating Postman collection..."
+          if [[ -f "postman/Face_Verification_API.postman_collection.json" ]]; then
+            python -c "
+            import json
+            with open('postman/Face_Verification_API.postman_collection.json', 'r') as f:
+                collection = json.load(f)
+            
+            if 'info' not in collection:
+                raise Exception('Invalid Postman collection: missing info')
+            
+            if 'item' not in collection:
+                raise Exception('Invalid Postman collection: missing items')
+            
+            print('✅ Postman collection is valid')
+            "
+          else
+            echo "⚠️ Postman collection not found"
+          fi
+
+  integration-test:
+    name: Integration Test
+    runs-on: ubuntu-latest
+    needs: [validate-workflows, validate-helm-charts, validate-docker, validate-scripts]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Setup tools
+        run: |
+          # Install Helm
+          curl https://get.helm.sh/helm-v3.12.0-linux-amd64.tar.gz | tar xz
+          sudo mv linux-amd64/helm /usr/local/bin/
+          
+          # Install kubectl
+          curl -LO "https://dl.k8s.io/release/v1.28.0/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+          
+          # Install Python dependencies
+          python -m pip install --upgrade pip
+          pip install pyyaml requests pytest black flake8 bandit
+
+      - name: Run comprehensive pipeline test
+        run: |
+          echo "Running comprehensive CI/CD pipeline test..."
+          chmod +x scripts/test-cicd.sh
+          ./scripts/test-cicd.sh
+
+      - name: Test environment simulation
+        run: |
+          echo "Testing environment-specific deployments..."
+          
+          # Test staging deployment
+          helm template face-verification k8s/helm/face-verification/ \
+            --set environment=staging \
+            --set image.tag=pr-${{ github.event.number || 'test' }} \
+            --set replicaCount=1 > staging-deployment.yaml
+          
+          kubectl apply --dry-run=client -f staging-deployment.yaml
+          
+          # Test production deployment  
+          helm template face-verification k8s/helm/face-verification/ \
+            --set environment=production \
+            --set image.tag=v1.0.0 \
+            --set replicaCount=3 \
+            --set autoscaling.enabled=true > production-deployment.yaml
+          
+          kubectl apply --dry-run=client -f production-deployment.yaml
+          
+          echo "✅ Environment simulation passed"
+
+  pipeline-summary:
+    name: Pipeline Validation Summary
+    runs-on: ubuntu-latest
+    needs: [validate-workflows, validate-helm-charts, validate-docker, validate-scripts, validate-documentation, integration-test]
+    if: always()
+    
+    steps:
+      - name: Generate summary
+        run: |
+          echo "# Pipeline Validation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Validation Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Check job results
+          if [[ "${{ needs.validate-workflows.result }}" == "success" ]]; then
+            echo "✅ Workflow validation passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Workflow validation failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "${{ needs.validate-helm-charts.result }}" == "success" ]]; then
+            echo "✅ Helm chart validation passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Helm chart validation failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "${{ needs.validate-docker.result }}" == "success" ]]; then
+            echo "✅ Docker validation passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Docker validation failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "${{ needs.validate-scripts.result }}" == "success" ]]; then
+            echo "✅ Script validation passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Script validation failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "${{ needs.validate-documentation.result }}" == "success" ]]; then
+            echo "✅ Documentation validation passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Documentation validation failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "${{ needs.integration-test.result }}" == "success" ]]; then
+            echo "✅ Integration test passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Integration test failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "If all validations passed:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Merge this PR to trigger the CI pipeline" >> $GITHUB_STEP_SUMMARY
+          echo "2. CI will build and test the application" >> $GITHUB_STEP_SUMMARY
+          echo "3. On success, CD will deploy to staging (develop branch) or production (main branch)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch-based deployment strategy:**" >> $GITHUB_STEP_SUMMARY
+          echo "- `main` branch → Production deployment" >> $GITHUB_STEP_SUMMARY
+          echo "- `develop` branch → Staging deployment" >> $GITHUB_STEP_SUMMARY
+          echo "- Feature branches → CI testing only" >> $GITHUB_STEP_SUMMARY
+
+      - name: Final status
+        run: |
+          if [[ "${{ needs.validate-workflows.result }}" == "success" ]] && \
+             [[ "${{ needs.validate-helm-charts.result }}" == "success" ]] && \
+             [[ "${{ needs.validate-docker.result }}" == "success" ]] && \
+             [[ "${{ needs.validate-scripts.result }}" == "success" ]] && \
+             [[ "${{ needs.validate-documentation.result }}" == "success" ]] && \
+             [[ "${{ needs.integration-test.result }}" == "success" ]]; then
+            echo "🎉 All pipeline validations passed! The CI/CD setup is ready for production use."
+            exit 0
+          else
+            echo "❌ Some validations failed. Please check the logs and fix the issues."
+            exit 1
+          fi

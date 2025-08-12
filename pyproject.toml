@@ -1,0 +1,48 @@
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = [
+    "--strict-markers",
+    "--disable-warnings",
+    "-ra",
+    "--tb=short"
+]
+testpaths = [
+    "tests"
+]
+python_files = [
+    "test_*.py"
+]
+python_classes = [
+    "Test*"
+]
+python_functions = [
+    "test_*"
+]
+markers = [
+    "slow: marks tests as slow",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests", 
+    "api: marks tests as API tests",
+    "monitoring: marks tests as monitoring tests"
+]
+
+[tool.coverage.run]
+source = [
+    "domain",
+    "application", 
+    "infrastructure",
+    "presentation"
+]
+omit = [
+    "*/tests/*",
+    "*/test_*"
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError"
+]
+show_missing = true

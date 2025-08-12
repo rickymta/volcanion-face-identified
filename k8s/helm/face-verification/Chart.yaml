@@ -1,0 +1,34 @@
+apiVersion: v2
+name: face-verification
+description: A Helm chart for Face Verification API
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+
+keywords:
+  - face-verification
+  - machine-learning
+  - api
+  - fastapi
+  - computer-vision
+
+home: https://github.com/your-org/volcanion-face-identified
+sources:
+  - https://github.com/your-org/volcanion-face-identified
+
+maintainers:
+  - name: Development Team
+    email: dev-team@yourcompany.com
+
+dependencies:
+  - name: mongodb
+    version: 13.15.1
+    repository: https://charts.bitnami.com/bitnami
+    condition: mongodb.enabled
+  - name: redis
+    version: 17.11.3
+    repository: https://charts.bitnami.com/bitnami
+    condition: redis.enabled
+
+annotations:
+  category: Machine Learning

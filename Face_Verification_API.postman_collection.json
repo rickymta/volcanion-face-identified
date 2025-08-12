@@ -1,0 +1,736 @@
+{
+	"info": {
+		"_postman_id": "face-verification-api-collection",
+		"name": "Face Verification & ID Document Processing API",
+		"description": "Comprehensive collection for testing Face Verification System with 6 main modules: Document Detection, Quality Check, Face Detection, Face Verification, Liveness Detection, and OCR Extraction.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "face-verification-system"
+	},
+	"item": [
+		{
+			"name": "🏠 System Health & Info",
+			"item": [
+				{
+					"name": "Root - System Overview",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/",
+							"host": ["{{base_url}}"],
+							"path": [""]
+						},
+						"description": "Get system overview and available modules"
+					}
+				},
+				{
+					"name": "Health Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/health",
+							"host": ["{{base_url}}"],
+							"path": ["health"]
+						},
+						"description": "Comprehensive health check including database status"
+					}
+				},
+				{
+					"name": "API Documentation",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/docs",
+							"host": ["{{base_url}}"],
+							"path": ["docs"]
+						},
+						"description": "Interactive Swagger documentation"
+					}
+				}
+			]
+		},
+		{
+			"name": "📄 Document Detection",
+			"item": [
+				{
+					"name": "Detect Document",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "multipart/form-data"
+							}
+						],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": "",
+									"description": "Upload ID document image (JPG, PNG, BMP, TIFF)"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/document/detect",
+							"host": ["{{base_url}}"],
+							"path": ["document", "detect"]
+						},
+						"description": "Detect and classify document type from uploaded image"
+					}
+				},
+				{
+					"name": "Get Detection Result",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/document/result/{{detection_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["document", "result", "{{detection_id}}"]
+						},
+						"description": "Retrieve detection result by ID"
+					}
+				},
+				{
+					"name": "List All Detections",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/document/detections?limit=10&offset=0",
+							"host": ["{{base_url}}"],
+							"path": ["document", "detections"],
+							"query": [
+								{
+									"key": "limit",
+									"value": "10"
+								},
+								{
+									"key": "offset",
+									"value": "0"
+								}
+							]
+						},
+						"description": "Get list of all document detections with pagination"
+					}
+				}
+			]
+		},
+		{
+			"name": "🔍 Document Quality",
+			"item": [
+				{
+					"name": "Analyze Quality",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": "",
+									"description": "Document image for quality analysis"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/quality/analyze",
+							"host": ["{{base_url}}"],
+							"path": ["quality", "analyze"]
+						},
+						"description": "Analyze document quality including blur, brightness, contrast"
+					}
+				},
+				{
+					"name": "Check Tamper",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": ""
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/quality/tamper-check",
+							"host": ["{{base_url}}"],
+							"path": ["quality", "tamper-check"]
+						},
+						"description": "Check document for signs of tampering or forgery"
+					}
+				},
+				{
+					"name": "Batch Quality Analysis",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "files",
+									"type": "file",
+									"src": "",
+									"description": "Multiple files for batch processing"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/quality/batch-analyze",
+							"host": ["{{base_url}}"],
+							"path": ["quality", "batch-analyze"]
+						},
+						"description": "Analyze quality of multiple documents in batch"
+					}
+				}
+			]
+		},
+		{
+			"name": "👤 Face Detection",
+			"item": [
+				{
+					"name": "Detect Faces",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": "",
+									"description": "Image containing faces to detect"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/face-detection/detect",
+							"host": ["{{base_url}}"],
+							"path": ["face-detection", "detect"]
+						},
+						"description": "Detect faces in uploaded image with bounding boxes"
+					}
+				},
+				{
+					"name": "Extract Face Regions",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": ""
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/face-detection/extract",
+							"host": ["{{base_url}}"],
+							"path": ["face-detection", "extract"]
+						},
+						"description": "Extract and align detected face regions"
+					}
+				},
+				{
+					"name": "Batch Face Detection",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "files",
+									"type": "file",
+									"src": ""
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/face-detection/batch-detect",
+							"host": ["{{base_url}}"],
+							"path": ["face-detection", "batch-detect"]
+						},
+						"description": "Detect faces in multiple images"
+					}
+				}
+			]
+		},
+		{
+			"name": "🔐 Face Verification",
+			"item": [
+				{
+					"name": "Generate Face Embedding",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": "",
+									"description": "Face image for embedding generation"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/face-verification/embedding",
+							"host": ["{{base_url}}"],
+							"path": ["face-verification", "embedding"]
+						},
+						"description": "Generate face embedding vector"
+					}
+				},
+				{
+					"name": "Verify Faces",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "reference_image",
+									"type": "file",
+									"src": "",
+									"description": "Reference face image"
+								},
+								{
+									"key": "target_image",
+									"type": "file",
+									"src": "",
+									"description": "Target face image to compare"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/face-verification/verify",
+							"host": ["{{base_url}}"],
+							"path": ["face-verification", "verify"]
+						},
+						"description": "Verify if two face images belong to the same person"
+					}
+				},
+				{
+					"name": "Batch Verification",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "reference_image",
+									"type": "file",
+									"src": ""
+								},
+								{
+									"key": "target_images",
+									"type": "file",
+									"src": "",
+									"description": "Multiple target images"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/face-verification/batch-verify",
+							"host": ["{{base_url}}"],
+							"path": ["face-verification", "batch-verify"]
+						},
+						"description": "Verify one reference against multiple target images"
+					}
+				}
+			]
+		},
+		{
+			"name": "🎭 Liveness Detection",
+			"item": [
+				{
+					"name": "Check Liveness",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": "",
+									"description": "Face image for liveness detection"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/liveness/detect",
+							"host": ["{{base_url}}"],
+							"path": ["liveness", "detect"]
+						},
+						"description": "Detect if face image is from a live person or spoofed"
+					}
+				},
+				{
+					"name": "Anti-Spoofing Analysis",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": ""
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/liveness/anti-spoofing",
+							"host": ["{{base_url}}"],
+							"path": ["liveness", "anti-spoofing"]
+						},
+						"description": "Advanced anti-spoofing analysis with texture and frequency analysis"
+					}
+				},
+				{
+					"name": "Batch Liveness Check",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "files",
+									"type": "file",
+									"src": ""
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/liveness/batch-detect",
+							"host": ["{{base_url}}"],
+							"path": ["liveness", "batch-detect"]
+						},
+						"description": "Check liveness for multiple face images"
+					}
+				}
+			]
+		},
+		{
+			"name": "📝 OCR Extraction",
+			"item": [
+				{
+					"name": "Extract Text",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": "",
+									"description": "Document image for text extraction"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/ocr/extract",
+							"host": ["{{base_url}}"],
+							"path": ["ocr", "extract"]
+						},
+						"description": "Extract text from document image using OCR"
+					}
+				},
+				{
+					"name": "Extract Specific Fields",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": ""
+								},
+								{
+									"key": "field_types",
+									"value": "ID_NUMBER,FULL_NAME,DOB",
+									"type": "text",
+									"description": "Comma-separated field types to extract"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/ocr/extract-fields",
+							"host": ["{{base_url}}"],
+							"path": ["ocr", "extract-fields"]
+						},
+						"description": "Extract specific fields from ID document"
+					}
+				},
+				{
+					"name": "Validate Extracted Data",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"result_id\": \"ocr_result_id_here\",\n  \"validation_rules\": {\n    \"ID_NUMBER\": \"^[0-9]{9,12}$\",\n    \"FULL_NAME\": \"^[A-Za-z\\\\s]+$\"\n  }\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/ocr/validate",
+							"host": ["{{base_url}}"],
+							"path": ["ocr", "validate"]
+						},
+						"description": "Validate extracted text data against rules"
+					}
+				},
+				{
+					"name": "Batch OCR Processing",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "files",
+									"type": "file",
+									"src": ""
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/ocr/batch-extract",
+							"host": ["{{base_url}}"],
+							"path": ["ocr", "batch-extract"]
+						},
+						"description": "Extract text from multiple documents"
+					}
+				}
+			]
+		},
+		{
+			"name": "📊 Monitoring & Analytics",
+			"item": [
+				{
+					"name": "System Health",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/monitoring/health",
+							"host": ["{{base_url}}"],
+							"path": ["monitoring", "health"]
+						},
+						"description": "Comprehensive system health check"
+					}
+				},
+				{
+					"name": "Performance Summary",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/monitoring/performance/summary",
+							"host": ["{{base_url}}"],
+							"path": ["monitoring", "performance", "summary"]
+						},
+						"description": "Overall performance metrics summary"
+					}
+				},
+				{
+					"name": "Endpoint Statistics",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/monitoring/performance/endpoints",
+							"host": ["{{base_url}}"],
+							"path": ["monitoring", "performance", "endpoints"]
+						},
+						"description": "Detailed statistics for all API endpoints"
+					}
+				},
+				{
+					"name": "Top Endpoints",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/monitoring/performance/top-endpoints?limit=10",
+							"host": ["{{base_url}}"],
+							"path": ["monitoring", "performance", "top-endpoints"],
+							"query": [
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							]
+						},
+						"description": "Most frequently used endpoints"
+					}
+				},
+				{
+					"name": "Slow Endpoints",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/monitoring/performance/slow-endpoints?limit=10",
+							"host": ["{{base_url}}"],
+							"path": ["monitoring", "performance", "slow-endpoints"],
+							"query": [
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							]
+						},
+						"description": "Slowest performing endpoints"
+					}
+				},
+				{
+					"name": "Error Summary",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/monitoring/performance/errors?hours=24",
+							"host": ["{{base_url}}"],
+							"path": ["monitoring", "performance", "errors"],
+							"query": [
+								{
+									"key": "hours",
+									"value": "24"
+								}
+							]
+						},
+						"description": "Error summary by status code"
+					}
+				},
+				{
+					"name": "Performance Trends",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/monitoring/analytics/trends?hours=24",
+							"host": ["{{base_url}}"],
+							"path": ["monitoring", "analytics", "trends"],
+							"query": [
+								{
+									"key": "hours",
+									"value": "24"
+								}
+							]
+						},
+						"description": "Performance trends and analytics"
+					}
+				},
+				{
+					"name": "Export Metrics",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/monitoring/export/metrics?hours=24&format=json",
+							"host": ["{{base_url}}"],
+							"path": ["monitoring", "export", "metrics"],
+							"query": [
+								{
+									"key": "hours",
+									"value": "24"
+								},
+								{
+									"key": "format",
+									"value": "json"
+								}
+							]
+						},
+						"description": "Export performance metrics to file"
+					}
+				}
+			]
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:8000",
+			"type": "string"
+		},
+		{
+			"key": "detection_id",
+			"value": "",
+			"type": "string",
+			"description": "Document detection result ID"
+		},
+		{
+			"key": "api_key",
+			"value": "",
+			"type": "string",
+			"description": "API key for authentication (if required)"
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					"// Auto-generate request ID for tracking",
+					"pm.globals.set('request_id', Math.random().toString(36).substring(7));"
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					"// Basic response validation",
+					"pm.test('Status code is successful', function () {",
+					"    pm.expect(pm.response.code).to.be.oneOf([200, 201, 202]);",
+					"});",
+					"",
+					"pm.test('Response time is acceptable', function () {",
+					"    pm.expect(pm.response.responseTime).to.be.below(30000);",
+					"});",
+					"",
+					"pm.test('Response has valid JSON', function () {",
+					"    pm.response.to.have.jsonBody();",
+					"});"
+				]
+			}
+		}
+	]
+}

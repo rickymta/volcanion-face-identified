@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "face-verification.fullname" . }}
+  labels:
+    {{- include "face-verification.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "face-verification.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "face-verification.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "face-verification.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          env:
+            - name: ENVIRONMENT
+              value: {{ .Values.environment }}
+            - name: MONGODB_URL
+              value: "mongodb://{{ .Values.mongodb.auth.username }}:{{ .Values.mongodb.auth.password }}@{{ include "face-verification.fullname" . }}-mongodb:27017"
+            - name: MONGODB_DATABASE
+              value: {{ .Values.mongodb.auth.database }}
+            - name: REDIS_URL
+              value: "redis://:{{ .Values.redis.auth.password }}@{{ include "face-verification.fullname" . }}-redis-master:6379"
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "face-verification.fullname" . }}-secret
+                  key: secret-key
+            - name: LOG_LEVEL
+              value: {{ .Values.api.logLevel }}
+            - name: DEBUG
+              value: "{{ .Values.api.debug }}"
+            - name: MAX_UPLOAD_SIZE
+              value: "{{ .Values.api.maxUploadSize }}"
+            - name: RATE_LIMIT_PER_MINUTE
+              value: "{{ .Values.api.rateLimitPerMinute }}"
+            - name: CORS_ORIGINS
+              value: {{ .Values.api.corsOrigins }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.persistence.enabled }}
+            - name: temp-storage
+              mountPath: {{ .Values.persistence.mountPath }}
+            {{- end }}
+      volumes:
+        {{- if .Values.persistence.enabled }}
+        - name: temp-storage
+          persistentVolumeClaim:
+            claimName: {{ include "face-verification.fullname" . }}-pvc
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
