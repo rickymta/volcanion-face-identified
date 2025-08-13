@@ -1,4 +1,4 @@
-name: CD Pipeline - Deployment
+name: CD Pipeline - Ubuntu Server Deployment
 
 on:
   workflow_run:
@@ -29,18 +29,20 @@ on:
         type: boolean
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: face-verification-api
+  DOCKER_HUB_IMAGE: rickymta/volcanion-face-identified
+  APP_NAME: face-verification-api
 
 jobs:
   # Pre-deployment checks
-  pre-deployment:
+  pre-deployment-checks:
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
     outputs:
       deploy-staging: ${{ steps.check.outputs.deploy-staging }}
       deploy-production: ${{ steps.check.outputs.deploy-production }}
       image-tag: ${{ steps.check.outputs.image-tag }}
+      server-staging: ${{ steps.check.outputs.server-staging }}
+      server-production: ${{ steps.check.outputs.server-production }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -53,9 +55,11 @@ jobs:
             if [[ "${{ github.event.inputs.environment }}" == "staging" ]]; then
               echo "deploy-staging=true" >> $GITHUB_OUTPUT
               echo "deploy-production=false" >> $GITHUB_OUTPUT
+              echo "server-staging=${{ secrets.STAGING_SERVER_HOST }}" >> $GITHUB_OUTPUT
             else
               echo "deploy-staging=false" >> $GITHUB_OUTPUT
               echo "deploy-production=true" >> $GITHUB_OUTPUT
+              echo "server-production=${{ secrets.PRODUCTION_SERVER_HOST }}" >> $GITHUB_OUTPUT
             fi
             echo "image-tag=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
           else
@@ -63,40 +67,47 @@ jobs:
             if [[ "${{ github.event.workflow_run.head_branch }}" == "develop" ]]; then
               echo "deploy-staging=true" >> $GITHUB_OUTPUT
               echo "deploy-production=false" >> $GITHUB_OUTPUT
+              echo "server-staging=${{ secrets.STAGING_SERVER_HOST }}" >> $GITHUB_OUTPUT
             elif [[ "${{ github.event.workflow_run.head_branch }}" == "main" ]]; then
               echo "deploy-staging=false" >> $GITHUB_OUTPUT
               echo "deploy-production=true" >> $GITHUB_OUTPUT
+              echo "server-production=${{ secrets.PRODUCTION_SERVER_HOST }}" >> $GITHUB_OUTPUT
             else
               echo "deploy-staging=false" >> $GITHUB_OUTPUT
               echo "deploy-production=false" >> $GITHUB_OUTPUT
             fi
-            echo "image-tag=${{ github.event.workflow_run.head_sha }}" >> $GITHUB_OUTPUT
+            echo "image-tag=${{ github.event.workflow_run.head_sha || github.sha }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Verify image exists
+      - name: Verify Docker image exists
         run: |
           IMAGE_TAG="${{ steps.check.outputs.image-tag }}"
           if [[ "$IMAGE_TAG" == "latest" ]]; then
             IMAGE_TAG="${{ github.event.workflow_run.head_sha || github.sha }}"
           fi
           
-          echo "Checking if image exists: ${{ env.REGISTRY }}/${{ github.repository }}:$IMAGE_TAG"
+          echo "Checking if image exists: ${{ env.DOCKER_HUB_IMAGE }}:$IMAGE_TAG"
           
-          # Login to check if image exists
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
-          
-          if docker manifest inspect ${{ env.REGISTRY }}/${{ github.repository }}:$IMAGE_TAG >/dev/null 2>&1; then
-            echo "✅ Image found: ${{ env.REGISTRY }}/${{ github.repository }}:$IMAGE_TAG"
+          # Check if image exists on Docker Hub
+          if docker manifest inspect ${{ env.DOCKER_HUB_IMAGE }}:$IMAGE_TAG >/dev/null 2>&1; then
+            echo "✅ Image found: ${{ env.DOCKER_HUB_IMAGE }}:$IMAGE_TAG"
           else
-            echo "❌ Image not found: ${{ env.REGISTRY }}/${{ github.repository }}:$IMAGE_TAG"
-            exit 1
+            echo "❌ Image not found: ${{ env.DOCKER_HUB_IMAGE }}:$IMAGE_TAG"
+            echo "Falling back to latest tag..."
+            if docker manifest inspect ${{ env.DOCKER_HUB_IMAGE }}:latest >/dev/null 2>&1; then
+              echo "✅ Fallback image found: ${{ env.DOCKER_HUB_IMAGE }}:latest"
+              echo "image-tag=latest" >> $GITHUB_OUTPUT
+            else
+              echo "❌ No suitable image found"
+              exit 1
+            fi
           fi
 
-  # Deploy to staging environment
+  # Deploy to staging Ubuntu server
   deploy-staging:
     runs-on: ubuntu-latest
-    needs: pre-deployment
-    if: needs.pre-deployment.outputs.deploy-staging == 'true'
+    needs: pre-deployment-checks
+    if: needs.pre-deployment-checks.outputs.deploy-staging == 'true'
     environment: 
       name: staging
       url: https://staging-api.face-verification.com
@@ -104,115 +115,248 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup deployment tools
+      - name: Setup SSH
         run: |
-          # Install kubectl
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          chmod +x kubectl
-          sudo mv kubectl /usr/local/bin/
-          
-          # Install helm
-          curl https://get.helm.sh/helm-v3.12.0-linux-amd64.tar.gz | tar xz
-          sudo mv linux-amd64/helm /usr/local/bin/
+          mkdir -p ~/.ssh
+          echo "${{ secrets.STAGING_SSH_PRIVATE_KEY }}" > ~/.ssh/staging_key
+          chmod 600 ~/.ssh/staging_key
+          ssh-keyscan -H ${{ secrets.STAGING_SERVER_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Configure kubectl
+      - name: Create deployment directory on server
         run: |
-          echo "${{ secrets.KUBE_CONFIG_STAGING }}" | base64 -d > kubeconfig
-          export KUBECONFIG=kubeconfig
-          kubectl config current-context
+          ssh -i ~/.ssh/staging_key ${{ secrets.STAGING_SERVER_USER }}@${{ secrets.STAGING_SERVER_HOST }} '
+            sudo mkdir -p /opt/face-verification-staging
+            sudo chown ${{ secrets.STAGING_SERVER_USER }}:${{ secrets.STAGING_SERVER_USER }} /opt/face-verification-staging
+          '
 
-      - name: Deploy to staging with Helm
+      - name: Copy deployment files to server
         run: |
-          export KUBECONFIG=kubeconfig
-          IMAGE_TAG="${{ needs.pre-deployment.outputs.image-tag }}"
-          
-          helm upgrade --install face-verification-staging ./k8s/helm/face-verification \
-            --namespace staging \
-            --create-namespace \
-            --set image.repository=${{ env.REGISTRY }}/${{ github.repository }} \
-            --set image.tag=$IMAGE_TAG \
-            --set environment=staging \
-            --set ingress.hosts[0].host=staging-api.face-verification.com \
-            --set mongodb.auth.rootPassword="${{ secrets.MONGODB_ROOT_PASSWORD_STAGING }}" \
-            --set mongodb.auth.username="${{ secrets.MONGODB_USERNAME_STAGING }}" \
-            --set mongodb.auth.password="${{ secrets.MONGODB_PASSWORD_STAGING }}" \
-            --set redis.auth.password="${{ secrets.REDIS_PASSWORD_STAGING }}" \
-            --set api.secretKey="${{ secrets.API_SECRET_KEY_STAGING }}" \
-            --timeout 10m \
-            --wait
+          # Copy docker-compose and configuration files
+          scp -i ~/.ssh/staging_key docker-compose.yml ${{ secrets.STAGING_SERVER_USER }}@${{ secrets.STAGING_SERVER_HOST }}:/opt/face-verification-staging/
+          scp -i ~/.ssh/staging_key -r nginx/ ${{ secrets.STAGING_SERVER_USER }}@${{ secrets.STAGING_SERVER_HOST }}:/opt/face-verification-staging/ || true
+
+      - name: Create staging environment file
+        run: |
+          ssh -i ~/.ssh/staging_key ${{ secrets.STAGING_SERVER_USER }}@${{ secrets.STAGING_SERVER_HOST }} '
+            cat > /opt/face-verification-staging/.env.staging << EOF
+            ENVIRONMENT=staging
+            DEBUG=false
+            LOG_LEVEL=INFO
+            
+            # API Configuration
+            API_HOST=0.0.0.0
+            API_PORT=8000
+            API_SECRET_KEY=${{ secrets.API_SECRET_KEY_STAGING }}
+            
+            # Database Configuration
+            MONGODB_URL=${{ secrets.MONGODB_URL_STAGING }}
+            MONGODB_DATABASE=face_verification_staging
+            MONGODB_USERNAME=${{ secrets.MONGODB_USERNAME_STAGING }}
+            MONGODB_PASSWORD=${{ secrets.MONGODB_PASSWORD_STAGING }}
+            
+            # Redis Configuration
+            REDIS_URL=${{ secrets.REDIS_URL_STAGING }}
+            REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD_STAGING }}
+            
+            # Docker Configuration
+            DOCKER_IMAGE=${{ env.DOCKER_HUB_IMAGE }}:${{ needs.pre-deployment-checks.outputs.image-tag }}
+            COMPOSE_PROJECT_NAME=face-verification-staging
+            
+            # Nginx Configuration
+            DOMAIN=staging-api.face-verification.com
+            SSL_EMAIL=${{ secrets.SSL_EMAIL }}
+            EOF
+          '
+
+      - name: Update Docker Compose for staging
+        run: |
+          ssh -i ~/.ssh/staging_key ${{ secrets.STAGING_SERVER_USER }}@${{ secrets.STAGING_SERVER_HOST }} '
+            cd /opt/face-verification-staging
+            
+            # Create staging-specific docker-compose override
+            cat > docker-compose.staging.yml << EOF
+            version: "3.8"
+            
+            services:
+              face-verification-api:
+                image: ${{ env.DOCKER_HUB_IMAGE }}:${{ needs.pre-deployment-checks.outputs.image-tag }}
+                container_name: face-verification-staging
+                restart: unless-stopped
+                env_file:
+                  - .env.staging
+                ports:
+                  - "8001:8000"
+                depends_on:
+                  - mongodb
+                  - redis
+                volumes:
+                  - ./models:/app/models:ro
+                  - ./logs:/app/logs
+                  - ./temp:/app/temp
+                networks:
+                  - face-verification-staging
+                healthcheck:
+                  test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+                  interval: 30s
+                  timeout: 10s
+                  retries: 3
+                  start_period: 40s
+            
+              mongodb:
+                image: mongo:5.0
+                container_name: mongodb-staging
+                restart: unless-stopped
+                environment:
+                  MONGO_INITDB_ROOT_USERNAME: \${{ secrets.MONGODB_USERNAME_STAGING }}
+                  MONGO_INITDB_ROOT_PASSWORD: \${{ secrets.MONGODB_PASSWORD_STAGING }}
+                  MONGO_INITDB_DATABASE: face_verification_staging
+                ports:
+                  - "27018:27017"
+                volumes:
+                  - mongodb_data_staging:/data/db
+                networks:
+                  - face-verification-staging
+            
+              redis:
+                image: redis:7-alpine
+                container_name: redis-staging
+                restart: unless-stopped
+                command: redis-server --requirepass \${{ secrets.REDIS_PASSWORD_STAGING }}
+                ports:
+                  - "6380:6379"
+                volumes:
+                  - redis_data_staging:/data
+                networks:
+                  - face-verification-staging
+            
+              nginx:
+                image: nginx:alpine
+                container_name: nginx-staging
+                restart: unless-stopped
+                ports:
+                  - "80:80"
+                  - "443:443"
+                depends_on:
+                  - face-verification-api
+                volumes:
+                  - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+                  - ./nginx/staging.conf:/etc/nginx/conf.d/default.conf:ro
+                  - /etc/letsencrypt:/etc/letsencrypt:ro
+                networks:
+                  - face-verification-staging
+            
+            volumes:
+              mongodb_data_staging:
+              redis_data_staging:
+            
+            networks:
+              face-verification-staging:
+                driver: bridge
+            EOF
+          '
+
+      - name: Deploy to staging server
+        run: |
+          ssh -i ~/.ssh/staging_key ${{ secrets.STAGING_SERVER_USER }}@${{ secrets.STAGING_SERVER_HOST }} '
+            cd /opt/face-verification-staging
+            
+            # Pull the latest image
+            docker pull ${{ env.DOCKER_HUB_IMAGE }}:${{ needs.pre-deployment-checks.outputs.image-tag }}
+            
+            # Stop existing containers
+            docker-compose -f docker-compose.staging.yml down || true
+            
+            # Start new deployment
+            docker-compose -f docker-compose.staging.yml up -d
+            
+            # Wait for services to be ready
+            echo "Waiting for services to start..."
+            sleep 30
+            
+            # Check container status
+            docker-compose -f docker-compose.staging.yml ps
+          '
 
       - name: Verify staging deployment
         run: |
-          export KUBECONFIG=kubeconfig
-          
-          # Wait for rollout to complete
-          kubectl rollout status deployment/face-verification-staging -n staging --timeout=300s
-          
-          # Check pod status
-          kubectl get pods -n staging -l app.kubernetes.io/name=face-verification
-          
-          # Verify service is accessible
-          kubectl get svc -n staging
+          ssh -i ~/.ssh/staging_key ${{ secrets.STAGING_SERVER_USER }}@${{ secrets.STAGING_SERVER_HOST }} '
+            cd /opt/face-verification-staging
+            
+            # Check if containers are running
+            if docker-compose -f docker-compose.staging.yml ps | grep -q "Up"; then
+              echo "✅ Containers are running"
+            else
+              echo "❌ Containers failed to start"
+              docker-compose -f docker-compose.staging.yml logs
+              exit 1
+            fi
+            
+            # Health check
+            for i in {1..10}; do
+              if curl -f http://localhost:8001/health; then
+                echo "✅ Health check passed"
+                break
+              else
+                echo "⏳ Waiting for health check... ($i/10)"
+                sleep 10
+              fi
+            done
+          '
 
       - name: Run staging smoke tests
         run: |
           # Wait a bit for the service to be fully ready
           sleep 30
           
-          # Health check
-          STAGING_URL="https://staging-api.face-verification.com"
+          STAGING_HOST="${{ secrets.STAGING_SERVER_HOST }}"
           
+          # Health check
           echo "Testing health endpoint..."
-          response=$(curl -s -o /dev/null -w "%{http_code}" "$STAGING_URL/health")
-          if [[ $response -eq 200 ]]; then
+          if curl -f -s http://$STAGING_HOST:8001/health; then
             echo "✅ Health check passed"
           else
-            echo "❌ Health check failed with status: $response"
+            echo "❌ Health check failed"
             exit 1
           fi
           
           # API documentation check
           echo "Testing API docs endpoint..."
-          response=$(curl -s -o /dev/null -w "%{http_code}" "$STAGING_URL/docs")
-          if [[ $response -eq 200 ]]; then
+          if curl -f -s http://$STAGING_HOST:8001/docs > /dev/null; then
             echo "✅ API docs accessible"
           else
-            echo "❌ API docs failed with status: $response"
+            echo "❌ API docs failed"
             exit 1
           fi
-          
-          # Monitoring endpoint check
-          echo "Testing monitoring endpoint..."
-          response=$(curl -s -o /dev/null -w "%{http_code}" "$STAGING_URL/monitoring/health")
-          if [[ $response -eq 200 ]]; then
-            echo "✅ Monitoring endpoint accessible"
-          else
-            echo "❌ Monitoring endpoint failed with status: $response"
-            exit 1
-          fi
+
+      - name: Cleanup old containers and images
+        run: |
+          ssh -i ~/.ssh/staging_key ${{ secrets.STAGING_SERVER_USER }}@${{ secrets.STAGING_SERVER_HOST }} '
+            # Remove old unused images
+            docker image prune -f
+            
+            # Remove old containers
+            docker container prune -f
+          '
 
       - name: Notify staging deployment
         if: always()
-        continue-on-error: true
-        uses: 8398a7/action-slack@v3
-        with:
-          status: ${{ job.status }}
-          channel: '#deployments'
-          text: |
-            Staging Deployment ${{ job.status }}
-            • Environment: staging
-            • Image: ${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.pre-deployment.outputs.image-tag }}
-            • URL: https://staging-api.face-verification.com
-            • Branch: ${{ github.event.workflow_run.head_branch || github.ref_name }}
-            • Commit: ${{ github.event.workflow_run.head_sha || github.sha }}
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          STATUS="${{ job.status }}"
+          if [[ "$STATUS" == "success" ]]; then
+            echo "🚀 Staging deployment completed successfully!"
+            echo "- Environment: staging"
+            echo "- Image: ${{ env.DOCKER_HUB_IMAGE }}:${{ needs.pre-deployment-checks.outputs.image-tag }}"
+            echo "- Server: ${{ secrets.STAGING_SERVER_HOST }}"
+            echo "- URL: http://${{ secrets.STAGING_SERVER_HOST }}:8001"
+          else
+            echo "❌ Staging deployment failed"
+          fi
 
-  # Deploy to production environment
+  # Deploy to production Ubuntu server
   deploy-production:
     runs-on: ubuntu-latest
-    needs: pre-deployment
-    if: needs.pre-deployment.outputs.deploy-production == 'true'
+    needs: pre-deployment-checks
+    if: needs.pre-deployment-checks.outputs.deploy-production == 'true'
     environment: 
       name: production
       url: https://api.face-verification.com
@@ -220,173 +364,305 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup deployment tools
+      - name: Setup SSH
         run: |
-          # Install kubectl
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          chmod +x kubectl
-          sudo mv kubectl /usr/local/bin/
-          
-          # Install helm
-          curl https://get.helm.sh/helm-v3.12.0-linux-amd64.tar.gz | tar xz
-          sudo mv linux-amd64/helm /usr/local/bin/
+          mkdir -p ~/.ssh
+          echo "${{ secrets.PRODUCTION_SSH_PRIVATE_KEY }}" > ~/.ssh/production_key
+          chmod 600 ~/.ssh/production_key
+          ssh-keyscan -H ${{ secrets.PRODUCTION_SERVER_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Configure kubectl
+      - name: Create deployment directory on server
         run: |
-          echo "${{ secrets.KUBE_CONFIG_PRODUCTION }}" | base64 -d > kubeconfig
-          export KUBECONFIG=kubeconfig
-          kubectl config current-context
+          ssh -i ~/.ssh/production_key ${{ secrets.PRODUCTION_SERVER_USER }}@${{ secrets.PRODUCTION_SERVER_HOST }} '
+            sudo mkdir -p /opt/face-verification-production
+            sudo chown ${{ secrets.PRODUCTION_SERVER_USER }}:${{ secrets.PRODUCTION_SERVER_USER }} /opt/face-verification-production
+          '
 
-      - name: Create backup before deployment
+      - name: Backup current deployment
         run: |
-          export KUBECONFIG=kubeconfig
-          
-          # Backup current deployment
-          kubectl get deployment face-verification-production -n production -o yaml > backup-deployment.yaml
-          
-          # Backup database (if needed)
-          # kubectl exec -n production deployment/mongodb -- mongodump --archive | gzip > backup-$(date +%Y%m%d-%H%M%S).gz
+          ssh -i ~/.ssh/production_key ${{ secrets.PRODUCTION_SERVER_USER }}@${{ secrets.PRODUCTION_SERVER_HOST }} '
+            cd /opt/face-verification-production
+            
+            # Create backup directory
+            BACKUP_DIR="/opt/backups/face-verification-$(date +%Y%m%d-%H%M%S)"
+            sudo mkdir -p $BACKUP_DIR
+            
+            # Backup current deployment
+            if [ -f docker-compose.production.yml ]; then
+              sudo cp -r . $BACKUP_DIR/ || true
+              echo "✅ Backup created at $BACKUP_DIR"
+            fi
+          '
 
-      - name: Deploy to production with Blue-Green strategy
+      - name: Copy deployment files to server
         run: |
-          export KUBECONFIG=kubeconfig
-          IMAGE_TAG="${{ needs.pre-deployment.outputs.image-tag }}"
-          
-          # Deploy to green environment first
-          helm upgrade --install face-verification-green ./k8s/helm/face-verification \
-            --namespace production \
-            --create-namespace \
-            --set image.repository=${{ env.REGISTRY }}/${{ github.repository }} \
-            --set image.tag=$IMAGE_TAG \
-            --set environment=production \
-            --set replicaCount=3 \
-            --set ingress.hosts[0].host=api.face-verification.com \
-            --set mongodb.auth.rootPassword="${{ secrets.MONGODB_ROOT_PASSWORD_PRODUCTION }}" \
-            --set mongodb.auth.username="${{ secrets.MONGODB_USERNAME_PRODUCTION }}" \
-            --set mongodb.auth.password="${{ secrets.MONGODB_PASSWORD_PRODUCTION }}" \
-            --set redis.auth.password="${{ secrets.REDIS_PASSWORD_PRODUCTION }}" \
-            --set api.secretKey="${{ secrets.API_SECRET_KEY_PRODUCTION }}" \
-            --set nameOverride="face-verification-green" \
-            --timeout 15m \
-            --wait
+          # Copy docker-compose and configuration files
+          scp -i ~/.ssh/production_key docker-compose.yml ${{ secrets.PRODUCTION_SERVER_USER }}@${{ secrets.PRODUCTION_SERVER_HOST }}:/opt/face-verification-production/
+          scp -i ~/.ssh/production_key -r nginx/ ${{ secrets.PRODUCTION_SERVER_USER }}@${{ secrets.PRODUCTION_SERVER_HOST }}:/opt/face-verification-production/ || true
 
-      - name: Verify green deployment
+      - name: Create production environment file
         run: |
-          export KUBECONFIG=kubeconfig
-          
-          # Wait for rollout to complete
-          kubectl rollout status deployment/face-verification-green -n production --timeout=600s
-          
-          # Check pod status
-          kubectl get pods -n production -l app.kubernetes.io/name=face-verification-green
-          
-          # Wait for pods to be ready
-          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=face-verification-green -n production --timeout=300s
+          ssh -i ~/.ssh/production_key ${{ secrets.PRODUCTION_SERVER_USER }}@${{ secrets.PRODUCTION_SERVER_HOST }} '
+            cat > /opt/face-verification-production/.env.production << EOF
+            ENVIRONMENT=production
+            DEBUG=false
+            LOG_LEVEL=WARNING
+            
+            # API Configuration
+            API_HOST=0.0.0.0
+            API_PORT=8000
+            API_SECRET_KEY=${{ secrets.API_SECRET_KEY_PRODUCTION }}
+            
+            # Database Configuration
+            MONGODB_URL=${{ secrets.MONGODB_URL_PRODUCTION }}
+            MONGODB_DATABASE=face_verification_production
+            MONGODB_USERNAME=${{ secrets.MONGODB_USERNAME_PRODUCTION }}
+            MONGODB_PASSWORD=${{ secrets.MONGODB_PASSWORD_PRODUCTION }}
+            
+            # Redis Configuration
+            REDIS_URL=${{ secrets.REDIS_URL_PRODUCTION }}
+            REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD_PRODUCTION }}
+            
+            # Docker Configuration
+            DOCKER_IMAGE=${{ env.DOCKER_HUB_IMAGE }}:${{ needs.pre-deployment-checks.outputs.image-tag }}
+            COMPOSE_PROJECT_NAME=face-verification-production
+            
+            # Nginx Configuration
+            DOMAIN=api.face-verification.com
+            SSL_EMAIL=${{ secrets.SSL_EMAIL }}
+            EOF
+          '
 
-      - name: Run production health checks
+      - name: Update Docker Compose for production
         run: |
-          export KUBECONFIG=kubeconfig
+          ssh -i ~/.ssh/production_key ${{ secrets.PRODUCTION_SERVER_USER }}@${{ secrets.PRODUCTION_SERVER_HOST }} '
+            cd /opt/face-verification-production
+            
+            # Create production-specific docker-compose override
+            cat > docker-compose.production.yml << EOF
+            version: "3.8"
+            
+            services:
+              face-verification-api:
+                image: ${{ env.DOCKER_HUB_IMAGE }}:${{ needs.pre-deployment-checks.outputs.image-tag }}
+                container_name: face-verification-production
+                restart: unless-stopped
+                env_file:
+                  - .env.production
+                ports:
+                  - "8000:8000"
+                depends_on:
+                  - mongodb
+                  - redis
+                volumes:
+                  - ./models:/app/models:ro
+                  - ./logs:/app/logs
+                  - ./temp:/app/temp
+                networks:
+                  - face-verification-production
+                healthcheck:
+                  test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+                  interval: 30s
+                  timeout: 10s
+                  retries: 3
+                  start_period: 40s
+                deploy:
+                  resources:
+                    limits:
+                      cpus: "2.0"
+                      memory: 4G
+                    reservations:
+                      cpus: "1.0"
+                      memory: 2G
+            
+              mongodb:
+                image: mongo:5.0
+                container_name: mongodb-production
+                restart: unless-stopped
+                environment:
+                  MONGO_INITDB_ROOT_USERNAME: \${{ secrets.MONGODB_USERNAME_PRODUCTION }}
+                  MONGO_INITDB_ROOT_PASSWORD: \${{ secrets.MONGODB_PASSWORD_PRODUCTION }}
+                  MONGO_INITDB_DATABASE: face_verification_production
+                ports:
+                  - "27017:27017"
+                volumes:
+                  - mongodb_data_production:/data/db
+                  - ./mongodb/mongod.conf:/etc/mongod.conf:ro
+                networks:
+                  - face-verification-production
+                deploy:
+                  resources:
+                    limits:
+                      cpus: "1.0"
+                      memory: 2G
+            
+              redis:
+                image: redis:7-alpine
+                container_name: redis-production
+                restart: unless-stopped
+                command: redis-server --requirepass \${{ secrets.REDIS_PASSWORD_PRODUCTION }} --maxmemory 1gb --maxmemory-policy allkeys-lru
+                ports:
+                  - "6379:6379"
+                volumes:
+                  - redis_data_production:/data
+                networks:
+                  - face-verification-production
+                deploy:
+                  resources:
+                    limits:
+                      cpus: "0.5"
+                      memory: 1G
+            
+              nginx:
+                image: nginx:alpine
+                container_name: nginx-production
+                restart: unless-stopped
+                ports:
+                  - "80:80"
+                  - "443:443"
+                depends_on:
+                  - face-verification-api
+                volumes:
+                  - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+                  - ./nginx/production.conf:/etc/nginx/conf.d/default.conf:ro
+                  - /etc/letsencrypt:/etc/letsencrypt:ro
+                networks:
+                  - face-verification-production
+            
+            volumes:
+              mongodb_data_production:
+              redis_data_production:
+            
+            networks:
+              face-verification-production:
+                driver: bridge
+            EOF
+          '
+
+      - name: Deploy to production server with zero downtime
+        run: |
+          ssh -i ~/.ssh/production_key ${{ secrets.PRODUCTION_SERVER_USER }}@${{ secrets.PRODUCTION_SERVER_HOST }} '
+            cd /opt/face-verification-production
+            
+            # Pull the latest image
+            docker pull ${{ env.DOCKER_HUB_IMAGE }}:${{ needs.pre-deployment-checks.outputs.image-tag }}
+            
+            # For zero-downtime deployment, start new container with different name first
+            export NEW_CONTAINER_NAME="face-verification-production-new"
+            
+            # Start new deployment
+            docker-compose -f docker-compose.production.yml up -d
+            
+            # Wait for new service to be ready
+            echo "Waiting for new service to start..."
+            sleep 45
+            
+            # Health check for new deployment
+            for i in {1..10}; do
+              if docker exec face-verification-production curl -f http://localhost:8000/health; then
+                echo "✅ New deployment health check passed"
+                break
+              else
+                echo "⏳ Waiting for new deployment health check... ($i/10)"
+                sleep 10
+              fi
+            done
+            
+            # Check container status
+            docker-compose -f docker-compose.production.yml ps
+          '
+
+      - name: Verify production deployment
+        run: |
+          ssh -i ~/.ssh/production_key ${{ secrets.PRODUCTION_SERVER_USER }}@${{ secrets.PRODUCTION_SERVER_HOST }} '
+            cd /opt/face-verification-production
+            
+            # Check if containers are running
+            if docker-compose -f docker-compose.production.yml ps | grep -q "Up"; then
+              echo "✅ Containers are running"
+            else
+              echo "❌ Containers failed to start"
+              docker-compose -f docker-compose.production.yml logs
+              exit 1
+            fi
+            
+            # Health check
+            for i in {1..10}; do
+              if curl -f http://localhost:8000/health; then
+                echo "✅ Production health check passed"
+                break
+              else
+                echo "⏳ Waiting for production health check... ($i/10)"
+                sleep 10
+              fi
+            done
+          '
+
+      - name: Run production smoke tests
+        run: |
+          # Wait a bit for the service to be fully ready
+          sleep 30
           
-          # Get green service endpoint
-          GREEN_SERVICE=$(kubectl get svc -n production -l app.kubernetes.io/name=face-verification-green -o jsonpath='{.items[0].spec.clusterIP}')
-          GREEN_PORT=$(kubectl get svc -n production -l app.kubernetes.io/name=face-verification-green -o jsonpath='{.items[0].spec.ports[0].port}')
-          
-          # Port forward for testing
-          kubectl port-forward -n production svc/face-verification-green 8080:8000 &
-          PF_PID=$!
-          sleep 10
+          PRODUCTION_HOST="${{ secrets.PRODUCTION_SERVER_HOST }}"
           
           # Health check
-          echo "Testing green deployment health..."
-          response=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/health")
-          if [[ $response -eq 200 ]]; then
-            echo "✅ Green deployment health check passed"
+          echo "Testing health endpoint..."
+          if curl -f -s http://$PRODUCTION_HOST:8000/health; then
+            echo "✅ Health check passed"
           else
-            echo "❌ Green deployment health check failed with status: $response"
-            kill $PF_PID
+            echo "❌ Health check failed"
             exit 1
           fi
           
-          # Monitoring check
-          echo "Testing green deployment monitoring..."
-          response=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/monitoring/health")
-          if [[ $response -eq 200 ]]; then
-            echo "✅ Green deployment monitoring check passed"
+          # API documentation check
+          echo "Testing API docs endpoint..."
+          if curl -f -s http://$PRODUCTION_HOST:8000/docs > /dev/null; then
+            echo "✅ API docs accessible"
           else
-            echo "❌ Green deployment monitoring check failed with status: $response"
-            kill $PF_PID
+            echo "❌ API docs failed"
             exit 1
           fi
           
-          kill $PF_PID
-
-      - name: Switch traffic to green (Blue-Green cutover)
-        run: |
-          export KUBECONFIG=kubeconfig
-          
-          # Update ingress to point to green deployment
-          kubectl patch ingress face-verification-ingress -n production -p '{"spec":{"rules":[{"host":"api.face-verification.com","http":{"paths":[{"path":"/","pathType":"Prefix","backend":{"service":{"name":"face-verification-green","port":{"number":8000}}}}]}}]}}'
-          
-          # Wait a moment for the change to propagate
-          sleep 30
-
-      - name: Final production verification
-        run: |
-          # Test the actual production URL
-          PRODUCTION_URL="https://api.face-verification.com"
-          
-          echo "Testing production endpoint after cutover..."
-          response=$(curl -s -o /dev/null -w "%{http_code}" "$PRODUCTION_URL/health")
-          if [[ $response -eq 200 ]]; then
-            echo "✅ Production health check passed"
+          # Monitoring endpoint check
+          echo "Testing monitoring endpoint..."
+          if curl -f -s http://$PRODUCTION_HOST:8000/monitoring/health > /dev/null; then
+            echo "✅ Monitoring endpoint accessible"
           else
-            echo "❌ Production health check failed with status: $response"
-            echo "Rolling back..."
+            echo "❌ Monitoring endpoint failed"
+            exit 1
+          fi
+
+      - name: Cleanup old containers and images
+        run: |
+          ssh -i ~/.ssh/production_key ${{ secrets.PRODUCTION_SERVER_USER }}@${{ secrets.PRODUCTION_SERVER_HOST }} '
+            # Remove old unused images (keep last 3 versions)
+            docker images ${{ env.DOCKER_HUB_IMAGE }} --format "table {{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.CreatedAt}}" | tail -n +4 | head -n -3 | awk "{print \$2}" | xargs -r docker rmi || true
             
-            # Rollback to blue deployment
-            kubectl patch ingress face-verification-ingress -n production -p '{"spec":{"rules":[{"host":"api.face-verification.com","http":{"paths":[{"path":"/","pathType":"Prefix","backend":{"service":{"name":"face-verification-production","port":{"number":8000}}}}]}}]}}'
-            exit 1
-          fi
-
-      - name: Cleanup old blue deployment
-        run: |
-          export KUBECONFIG=kubeconfig
-          
-          # Remove old blue deployment after successful green deployment
-          if kubectl get deployment face-verification-production -n production >/dev/null 2>&1; then
-            echo "Removing old blue deployment..."
-            kubectl delete deployment face-verification-production -n production || true
-            kubectl delete svc face-verification-production -n production || true
-          fi
-          
-          # Update green deployment labels to production
-          kubectl label deployment face-verification-green -n production app.kubernetes.io/instance=face-verification-production --overwrite
-          kubectl label svc face-verification-green -n production app.kubernetes.io/instance=face-verification-production --overwrite
-          
-          echo "✅ Blue-Green deployment completed successfully"
+            # Remove old containers
+            docker container prune -f
+            
+            # Remove unused volumes (be careful in production)
+            # docker volume prune -f
+          '
 
       - name: Notify production deployment
         if: always()
-        continue-on-error: true
-        uses: 8398a7/action-slack@v3
-        with:
-          status: ${{ job.status }}
-          channel: '#deployments'
-          text: |
-            🚀 Production Deployment ${{ job.status }}
-            • Environment: production
-            • Image: ${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.pre-deployment.outputs.image-tag }}
-            • URL: https://api.face-verification.com
-            • Branch: ${{ github.event.workflow_run.head_branch || github.ref_name }}
-            • Commit: ${{ github.event.workflow_run.head_sha || github.sha }}
-            • Strategy: Blue-Green Deployment
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          STATUS="${{ job.status }}"
+          if [[ "$STATUS" == "success" ]]; then
+            echo "🚀 Production deployment completed successfully!"
+            echo "- Environment: production"
+            echo "- Image: ${{ env.DOCKER_HUB_IMAGE }}:${{ needs.pre-deployment-checks.outputs.image-tag }}"
+            echo "- Server: ${{ secrets.PRODUCTION_SERVER_HOST }}"
+            echo "- URL: http://${{ secrets.PRODUCTION_SERVER_HOST }}:8000"
+          else
+            echo "❌ Production deployment failed"
+          fi
 
   # Post-deployment monitoring
-  post-deployment:
+  post-deployment-monitoring:
     runs-on: ubuntu-latest
-    needs: [pre-deployment, deploy-staging, deploy-production]
+    needs: [pre-deployment-checks, deploy-staging, deploy-production]
     if: always() && (needs.deploy-staging.result == 'success' || needs.deploy-production.result == 'success')
     steps:
       - name: Monitor deployment health
@@ -394,12 +670,15 @@ jobs:
           echo "Starting post-deployment monitoring..."
           
           ENDPOINT=""
+          ENV_NAME=""
           if [[ "${{ needs.deploy-staging.result }}" == "success" ]]; then
             echo "Monitoring staging deployment..."
-            ENDPOINT="https://staging-api.face-verification.com"
+            ENDPOINT="http://${{ secrets.STAGING_SERVER_HOST }}:8001"
+            ENV_NAME="staging"
           elif [[ "${{ needs.deploy-production.result }}" == "success" ]]; then
             echo "Monitoring production deployment..."
-            ENDPOINT="https://api.face-verification.com"
+            ENDPOINT="http://${{ secrets.PRODUCTION_SERVER_HOST }}:8000"
+            ENV_NAME="production"
           fi
           
           if [[ -z "$ENDPOINT" ]]; then
@@ -408,45 +687,124 @@ jobs:
           fi
           
           # Monitor for 5 minutes
+          FAILURES=0
           for i in {1..10}; do
-            echo "Health check $i/10..."
-            response=$(curl -s -o /dev/null -w "%{http_code}" "$ENDPOINT/health")
-            if [[ $response -eq 200 ]]; then
+            echo "Health check $i/10 for $ENV_NAME..."
+            if curl -f -s "$ENDPOINT/health" > /dev/null; then
               echo "✅ Health check $i passed"
             else
-              echo "❌ Health check $i failed with status: $response"
+              echo "❌ Health check $i failed"
+              FAILURES=$((FAILURES + 1))
             fi
             sleep 30
           done
+          
+          if [[ $FAILURES -gt 3 ]]; then
+            echo "❌ Too many health check failures ($FAILURES/10). Deployment may be unstable."
+            exit 1
+          else
+            echo "✅ Post-deployment monitoring completed successfully ($FAILURES failures out of 10 checks)"
+          fi
 
-      - name: Generate deployment report
+      - name: Generate deployment summary
         run: |
-          cat << EOF > deployment-report.md
-          # Deployment Report
+          cat << EOF > deployment-summary.md
+          # 🚀 Ubuntu Server Deployment Summary
           
           **Date**: $(date)
-          **Environment**: ${{ needs.pre-deployment.outputs.deploy-staging == 'true' && 'staging' || 'production' }}
-          **Image**: ${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.pre-deployment.outputs.image-tag }}
-          **Status**: ${{ (needs.deploy-staging.result == 'success' || needs.deploy-production.result == 'success') && 'SUCCESS' || 'FAILED' }}
+          **Environment**: ${{ needs.pre-deployment-checks.outputs.deploy-staging == 'true' && 'staging' || 'production' }}
+          **Image**: ${{ env.DOCKER_HUB_IMAGE }}:${{ needs.pre-deployment-checks.outputs.image-tag }}
+          **Status**: ${{ (needs.deploy-staging.result == 'success' || needs.deploy-production.result == 'success') && '✅ SUCCESS' || '❌ FAILED' }}
           
           ## Deployment Details
-          - Staging: ${{ needs.deploy-staging.result || 'skipped' }}
-          - Production: ${{ needs.deploy-production.result || 'skipped' }}
+          - **Staging**: ${{ needs.deploy-staging.result || 'skipped' }}
+          - **Production**: ${{ needs.deploy-production.result || 'skipped' }}
+          - **Branch**: ${{ github.event.workflow_run.head_branch || github.ref_name }}
+          - **Commit**: ${{ github.event.workflow_run.head_sha || github.sha }}
+          
+          ## Server Details
+          ${{ needs.pre-deployment-checks.outputs.deploy-staging == 'true' && format('- **Staging Server**: {0}:8001', secrets.STAGING_SERVER_HOST) || '' }}
+          ${{ needs.pre-deployment-checks.outputs.deploy-production == 'true' && format('- **Production Server**: {0}:8000', secrets.PRODUCTION_SERVER_HOST) || '' }}
           
           ## URLs
-          - Staging: https://staging-api.face-verification.com
-          - Production: https://api.face-verification.com
+          ${{ needs.pre-deployment-checks.outputs.deploy-staging == 'true' && format('- **Staging**: http://{0}:8001', secrets.STAGING_SERVER_HOST) || '' }}
+          ${{ needs.pre-deployment-checks.outputs.deploy-production == 'true' && format('- **Production**: http://{0}:8000', secrets.PRODUCTION_SERVER_HOST) || '' }}
           
           ## Next Steps
-          - Monitor application performance
-          - Check error rates in monitoring dashboard
-          - Verify all endpoints are functioning correctly
+          - ✅ Monitor application performance
+          - ✅ Check error rates in logs
+          - ✅ Verify all endpoints are functioning correctly
+          - ✅ Monitor server resources (CPU, Memory, Disk)
           EOF
           
-          cat deployment-report.md
+          cat deployment-summary.md
 
       - name: Upload deployment artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: deployment-report
-          path: deployment-report.md
+          name: ubuntu-deployment-summary
+          path: deployment-summary.md
+
+  # Deployment summary
+  deployment-summary:
+    runs-on: ubuntu-latest
+    needs: [pre-deployment-checks, deploy-staging, deploy-production, post-deployment-monitoring]
+    if: always()
+    steps:
+      - name: Generate final summary
+        run: |
+          echo "# 🚀 Ubuntu Server Deployment Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Deployment Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Check job results
+          if [[ "${{ needs.pre-deployment-checks.result }}" == "success" ]]; then
+            echo "✅ Pre-deployment checks passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Pre-deployment checks failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "${{ needs.deploy-staging.result }}" == "success" ]]; then
+            echo "✅ Staging deployment passed" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.deploy-staging.result }}" == "skipped" ]]; then
+            echo "⏭️ Staging deployment skipped" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Staging deployment failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "${{ needs.deploy-production.result }}" == "success" ]]; then
+            echo "✅ Production deployment passed" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.deploy-production.result }}" == "skipped" ]]; then
+            echo "⏭️ Production deployment skipped" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Production deployment failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "${{ needs.post-deployment-monitoring.result }}" == "success" ]]; then
+            echo "✅ Post-deployment monitoring passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Post-deployment monitoring failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Deployment Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: ${{ env.DOCKER_HUB_IMAGE }}:${{ needs.pre-deployment-checks.outputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: ${{ github.event.workflow_run.head_branch || github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ github.event.workflow_run.head_sha || github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trigger**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Access URLs" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔄 **Staging**: http://${{ secrets.STAGING_SERVER_HOST }}:8001" >> $GITHUB_STEP_SUMMARY
+          echo "- 🚀 **Production**: http://${{ secrets.PRODUCTION_SERVER_HOST }}:8000" >> $GITHUB_STEP_SUMMARY
+
+      - name: Final status
+        run: |
+          if [[ "${{ needs.deploy-staging.result }}" == "success" ]] || [[ "${{ needs.deploy-production.result }}" == "success" ]]; then
+            echo "🎉 Ubuntu server deployment completed successfully!"
+            exit 0
+          else
+            echo "❌ Ubuntu server deployment failed. Please check the logs and fix the issues."
+            exit 1
+          fi

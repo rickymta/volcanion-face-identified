@@ -10,7 +10,9 @@ env:
   PYTHON_VERSION: '3.9'
   NODE_VERSION: '16'
   REGISTRY: ghcr.io
+  DOCKER_HUB_REGISTRY: docker.io
   IMAGE_NAME: face-verification-api
+  DOCKER_HUB_IMAGE: rickymta/volcanion-face-identified
 
 jobs:
   # Code Quality & Security Analysis
@@ -215,6 +217,12 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     needs: [code-quality, tests]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/develop')
+    env:
+      REGISTRY: docker.io
+      IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/volcanion-face-identified
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -222,37 +230,38 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Container Registry
-        if: github.event_name != 'pull_request'
+      - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          registry: ${{ env.DOCKER_HUB_REGISTRY }}
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
             type=sha,prefix={{branch}}-
             type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
 
-      - name: Build Docker image
+      - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Run Trivy vulnerability scanner
+      - name: Run Trivy vulnerability scanner on GitHub image
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.REGISTRY }}/${{ github.repository }}:${{ github.sha }}
@@ -277,6 +286,15 @@ jobs:
         with:
           name: sbom
           path: sbom.spdx.json
+
+      - name: Update Docker Hub description
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: peter-evans/dockerhub-description@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+          repository: ${{ env.DOCKER_HUB_IMAGE }}
+          readme-filepath: ./README.md
 
   # SonarQube Analysis
   sonarqube:
@@ -329,27 +347,38 @@ jobs:
       - name: Notify CI completion
         if: always()
         run: |
-          echo "${{ steps.ci-status.outputs.message }}"
-          echo "Branch: ${{ github.ref_name }}"
-          echo "Commit: ${{ github.sha }}"
-          echo "Trigger: ${{ github.event_name }}"
-          
-          # Summary for GitHub
-          echo "## 🚀 CI Pipeline Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status**: ${{ steps.ci-status.outputs.status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Code Quality**: ${{ needs.code-quality.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests**: ${{ needs.tests.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Performance**: ${{ needs.performance.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Docker Build**: ${{ needs.docker.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **SonarQube**: ${{ needs.sonarqube.result }}" >> $GITHUB_STEP_SUMMARY
-          
+          summary=$(cat <<'EOF'
+          ${{ steps.ci-status.outputs.message }}
+          Branch: ${{ github.ref_name }}
+          Commit: ${{ github.sha }}
+          Trigger: ${{ github.event_name }}
+
+          ## 🚀 CI Pipeline Summary
+          - **Status**: ${{ steps.ci-status.outputs.status }}
+          - **Branch**: ${{ github.ref_name }}
+          - **Commit**: ${{ github.sha }}
+          - **Code Quality**: ${{ needs.code-quality.result }}
+          - **Tests**: ${{ needs.tests.result }}
+          - **Performance**: ${{ needs.performance.result }}
+          - **Docker Build**: ${{ needs.docker.result }}
+          - **SonarQube**: ${{ needs.sonarqube.result }}
+          EOF
+          )
+
+          # Thêm điều kiện vào biến luôn
           if [[ "${{ steps.ci-status.outputs.status }}" == "success" ]]; then
-            echo "- **Next Step**: CD Pipeline will be triggered automatically" >> $GITHUB_STEP_SUMMARY
+            summary="$summary
+          - **Next Step**: CD Pipeline will be triggered automatically"
           else
-            echo "- **Next Step**: Fix CI issues before deployment" >> $GITHUB_STEP_SUMMARY
+            summary="$summary
+          - **Next Step**: Fix CI issues before deployment"
           fi
+
+          MESSAGE="$summary"
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d text="$MESSAGE" \
+            -d parse_mode="Markdown"
 
   # Cleanup
   cleanup:

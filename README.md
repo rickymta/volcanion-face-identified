@@ -1,13 +1,14 @@
 # 🚀 Face Verification & ID Document Processing API
 
 [![CI/CD Pipeline](https://github.com/rickymta/volcanion-face-identified/actions/workflows/ci.yml/badge.svg)](https://github.com/rickymta/volcanion-face-identified/actions)
+[![Ubuntu Deployment](https://github.com/rickymta/volcanion-face-identified/actions/workflows/cd-ubuntu.yml/badge.svg)](https://github.com/rickymta/volcanion-face-identified/actions)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=rickymta_volcanion-face-identified&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=rickymta_volcanion-face-identified)
 [![Coverage](https://sonarcloud.io/api/project_badges/measure?project=rickymta_volcanion-face-identified&metric=coverage)](https://sonarcloud.io/summary/new_code?id=rickymta_volcanion-face-identified)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![Docker](https://img.shields.io/badge/docker-ready-blue.svg)](https://hub.docker.com/r/rickymta/volcanion-face-identified)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![Docker Hub](https://img.shields.io/badge/docker%20hub-rickymta/volcanion--face--identified-blue.svg)](https://hub.docker.com/r/rickymta/volcanion-face-identified)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Comprehensive Face Verification & ID Document Processing system built with **Domain-Driven Design (DDD)** architecture. Features advanced Machine Learning modules for document detection, quality analysis, face recognition, liveness detection, and OCR text extraction.
+Comprehensive Face Verification & ID Document Processing system built with **Domain-Driven Design (DDD)** architecture. Features advanced Machine Learning modules for document detection, quality analysis, face recognition, liveness detection, and OCR text extraction with **automated CI/CD deployment to Ubuntu servers**.
 
 ## 🎯 Features
 
@@ -26,6 +27,14 @@ Comprehensive Face Verification & ID Document Processing system built with **Dom
 - **Real-time Performance Monitoring** with metrics and analytics
 - **Comprehensive Testing** with pytest and coverage reporting
 - **Docker & Docker Compose** ready for containerized deployment
+
+### 🚀 **Production-Ready Deployment**
+- **Automated CI/CD Pipeline** with GitHub Actions
+- **Docker Hub Integration** for container distribution
+- **Ubuntu Server Deployment** for staging and production environments
+- **Zero-Downtime Deployment** with health checks and rollback support
+- **Multi-Environment Configuration** (staging/production)
+- **SSL/TLS Support** with Let's Encrypt integration
 
 ## 🏗️ Architecture
 
@@ -219,7 +228,247 @@ curl -X POST "http://localhost:8000/ocr/extract-fields" \
 curl http://localhost:8000/monitoring/performance/summary
 ```
 
-## 🧪 Testing & Quality Assurance
+## 🚀 Deployment
+
+### 🐳 Docker Hub
+
+Our Docker images are automatically built and published to Docker Hub:
+
+```bash
+# Pull the latest image
+docker pull rickymta/volcanion-face-identified:latest
+
+# Run with default settings
+docker run -p 8000:8000 rickymta/volcanion-face-identified:latest
+
+# Run with custom environment
+docker run -p 8000:8000 \
+  -e MONGODB_URL=mongodb://your-mongo:27017 \
+  -e MONGODB_DATABASE=face_verification \
+  rickymta/volcanion-face-identified:latest
+```
+
+**Available Tags:**
+- `latest` - Latest stable release from main branch
+- `develop` - Latest development build from develop branch
+- `v1.x.x` - Specific version releases
+- `main-<sha>` - Specific commit from main branch
+
+### 🖥️ Ubuntu Server Deployment
+
+The application supports automated deployment to Ubuntu servers for both staging and production environments.
+
+#### Prerequisites
+
+1. **Ubuntu Server** (18.04+ recommended)
+2. **Docker & Docker Compose** installed
+3. **SSH access** configured
+4. **Domain/subdomain** pointed to your server (optional)
+
+#### Environment Setup
+
+**Staging Environment:**
+```bash
+# Server: staging-server.example.com
+# Port: 8001
+# URL: http://staging-server.example.com:8001
+```
+
+**Production Environment:**
+```bash
+# Server: production-server.example.com  
+# Port: 8000
+# URL: http://production-server.example.com:8000
+```
+
+#### Required GitHub Secrets
+
+Configure the following secrets in your GitHub repository:
+
+**Docker Hub:**
+```
+DOCKER_HUB_USERNAME      # Docker Hub username
+DOCKER_HUB_TOKEN         # Docker Hub access token
+```
+
+**Staging Server:**
+```
+STAGING_SERVER_HOST      # IP or domain of staging server
+STAGING_SERVER_USER      # SSH username
+STAGING_SSH_PRIVATE_KEY  # SSH private key for staging server
+
+# Environment Variables
+API_SECRET_KEY_STAGING
+MONGODB_URL_STAGING
+MONGODB_USERNAME_STAGING
+MONGODB_PASSWORD_STAGING
+REDIS_URL_STAGING
+REDIS_PASSWORD_STAGING
+SSL_EMAIL               # Email for Let's Encrypt certificates
+```
+
+**Production Server:**
+```
+PRODUCTION_SERVER_HOST   # IP or domain of production server
+PRODUCTION_SERVER_USER   # SSH username
+PRODUCTION_SSH_PRIVATE_KEY # SSH private key for production server
+
+# Environment Variables
+API_SECRET_KEY_PRODUCTION
+MONGODB_URL_PRODUCTION
+MONGODB_USERNAME_PRODUCTION
+MONGODB_PASSWORD_PRODUCTION
+REDIS_URL_PRODUCTION
+REDIS_PASSWORD_PRODUCTION
+```
+
+#### Deployment Process
+
+**Automatic Deployment:**
+- **Staging**: Triggered when code is pushed to `develop` branch
+- **Production**: Triggered when code is pushed to `main` branch
+
+**Manual Deployment:**
+1. Go to **Actions** tab in GitHub
+2. Select **CD Pipeline - Ubuntu Server Deployment**
+3. Click **Run workflow**
+4. Choose environment (staging/production)
+5. Specify version/tag (optional)
+
+#### Server Directory Structure
+
+```
+/opt/face-verification-staging/     # Staging environment
+├── docker-compose.staging.yml
+├── .env.staging
+├── logs/
+├── models/
+└── temp/
+
+/opt/face-verification-production/  # Production environment
+├── docker-compose.production.yml
+├── .env.production
+├── logs/
+├── models/
+└── temp/
+
+/opt/backups/                      # Deployment backups
+└── face-verification-YYYYMMDD-HHMMSS/
+```
+
+#### Monitoring & Health Checks
+
+**Health Check Endpoints:**
+```bash
+# Staging
+curl http://staging-server:8001/health
+
+# Production  
+curl http://production-server:8000/health
+```
+
+**Container Status:**
+```bash
+# Check running containers
+docker ps
+
+# View logs
+docker logs face-verification-staging
+docker logs face-verification-production
+
+# Resource usage
+docker stats
+```
+
+#### SSL/TLS Configuration (Optional)
+
+For production deployment with SSL:
+
+1. **Install Certbot** on your server:
+```bash
+sudo apt install certbot python3-certbot-nginx
+```
+
+2. **Generate certificates:**
+```bash
+sudo certbot --nginx -d api.yourdomain.com
+```
+
+3. **Configure Nginx** for HTTPS redirect:
+```nginx
+server {
+    listen 80;
+    server_name api.yourdomain.com;
+    return 301 https://$server_name$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name api.yourdomain.com;
+    
+    ssl_certificate /etc/letsencrypt/live/api.yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.yourdomain.com/privkey.pem;
+    
+    location / {
+        proxy_pass http://localhost:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+```
+
+#### Troubleshooting
+
+**Common Issues:**
+
+1. **Container won't start:**
+```bash
+# Check logs
+docker logs face-verification-production
+# Check disk space
+df -h
+# Check memory
+free -m
+```
+
+2. **Database connection issues:**
+```bash
+# Check MongoDB container
+docker logs mongodb-production
+# Test connection
+docker exec -it mongodb-production mongosh
+```
+
+3. **Port conflicts:**
+```bash
+# Check what's using the port
+sudo netstat -tulpn | grep :8000
+# Kill process if needed
+sudo kill -9 <PID>
+```
+
+### 🔄 CI/CD Pipeline
+
+The project includes a comprehensive CI/CD pipeline with the following stages:
+
+**CI Pipeline (`.github/workflows/ci.yml`):**
+1. **Code Quality** - Black formatting, flake8 linting, mypy type checking
+2. **Security Scan** - Bandit security analysis, dependency vulnerability check
+3. **Testing** - Unit tests, integration tests, performance tests
+4. **Docker Build** - Multi-platform image build and push to Docker Hub
+5. **SonarQube** - Code quality analysis and coverage reporting
+
+**CD Pipeline (`.github/workflows/cd-ubuntu.yml`):**
+1. **Pre-deployment Checks** - Image verification, environment validation
+2. **Staging Deployment** - Deploy to staging Ubuntu server
+3. **Production Deployment** - Zero-downtime deployment to production server
+4. **Post-deployment Monitoring** - Health checks and performance verification
+
+**Deployment Strategy:**
+- **Branch-based deployment**: `develop` → staging, `main` → production
+- **Zero-downtime deployment** with health checks
+- **Automatic rollback** on deployment failure
+- **Multi-environment configuration** management & Quality Assurance
 
 ### Running Tests
 

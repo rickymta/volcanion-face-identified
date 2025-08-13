@@ -14,6 +14,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-language OCR support
 - Real-time video processing capabilities
 
+## [1.1.0] - 2025-08-13
+
+### Added
+
+#### 🚀 Production Deployment Features
+- **Docker Hub Integration** - Automated image building and publishing to Docker Hub
+- **Ubuntu Server Deployment** - Complete CD pipeline for Ubuntu server deployment
+- **Multi-Environment Support** - Separate staging and production environments
+- **Zero-Downtime Deployment** - Blue-green deployment strategy for production
+- **Automated Rollback** - Automatic rollback on deployment failure
+- **SSL/TLS Support** - HTTPS configuration with Let's Encrypt integration
+
+#### 🔄 Enhanced CI/CD Pipeline
+- **Multi-Platform Docker Builds** - Support for linux/amd64 and linux/arm64 architectures
+- **Docker Hub Publishing** - Automatic image publishing with semantic versioning
+- **Ubuntu Server CD Pipeline** - Dedicated workflow for Ubuntu server deployments
+- **Environment-based Deployment** - Branch-based deployment (develop → staging, main → production)
+- **Comprehensive Health Checks** - Pre and post-deployment verification
+- **Deployment Monitoring** - Continuous health monitoring after deployment
+
+#### 🛠️ Infrastructure Improvements
+- **Enhanced Docker Configuration** - Optimized Dockerfile with multi-stage builds
+- **Production-Ready Docker Compose** - Resource limits and health checks
+- **SSH-based Deployment** - Secure server access for deployment automation
+- **Backup & Recovery** - Automated backup creation before deployments
+- **Container Orchestration** - Advanced container management and scaling
+
+#### 📋 Deployment Documentation
+- **Complete Deployment Guide** - Step-by-step Ubuntu server setup instructions
+- **Environment Configuration** - Detailed environment variable documentation
+- **Troubleshooting Guide** - Common deployment issues and solutions
+- **SSL Configuration** - HTTPS setup with Nginx and Let's Encrypt
+- **Monitoring & Maintenance** - Server monitoring and maintenance procedures
+
+#### 🔒 Security Enhancements
+- **SSH Key Management** - Secure SSH key-based server authentication
+- **Environment Variable Protection** - Secure handling of sensitive configuration
+- **Container Security** - Non-root user execution and security scanning
+- **SSL/TLS Configuration** - Production-ready HTTPS setup
+- **Access Control** - Environment-based access restrictions
+
+### Changed
+- **Updated README.md** - Added comprehensive deployment documentation
+- **Enhanced Docker Configuration** - Multi-platform builds and security improvements
+- **Improved CI Pipeline** - Added Docker Hub integration and security scanning
+- **Updated Python Version** - Bumped to Python 3.9+ for better performance
+
+### Fixed
+- **Docker Build Issues** - Resolved multi-platform build compatibility
+- **Environment Configuration** - Fixed environment variable handling
+- **Health Check Reliability** - Improved container health check mechanisms
+- **Deployment Stability** - Enhanced error handling and recovery
+
+### Security
+- **Container Security Scanning** - Added Trivy vulnerability scanning
+- **Dependency Security Checks** - Enhanced security analysis for dependencies
+- **SSH Security** - Secure key-based authentication for deployments
+- **Production Security** - Security hardening for production environments
+
 ## [1.0.0] - 2025-08-12
 
 ### Added
